@@ -1,0 +1,52 @@
+lukstools
+=========
+
+lukstools is a collection of relatively simple scripts to make the creating,
+mounting, and unmounting of LUKS encrypted containers simpler.
+
+Usage
+=====
+
+* Create
+
+  + Create a LUKS encrypted container using a manual passphrase
+
+    lukscreate -c path-to-container-file
+
+  + Create a LUKS encrypted container using a generated key file
+  
+    lukscreate -c path-to-container-file -k
+
+
+* Mount
+
+  + Mount a LUKS encrypted container using a manual passphrase
+
+    luksmount path-to-container-file mountpoint
+
+  + Mount a LUKS encrypted container using a key file
+
+    luksmount -k path-to-key-file path-to-container-file mountpoint
+
+
+* Unmount
+
+  + Unmount a LUKS encrypted container
+
+    luksumount mountpoint
+
+License
+=======
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Puplic License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.

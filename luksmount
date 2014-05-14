@@ -1,0 +1,207 @@
+#!/bin/bash
+#
+# Filename:     luksmount
+# Author:       Bennett Samowich <bsamowich@foolean.org>
+# Date:         2014-04-29
+#
+# Description:
+#   luksmount is a script to handle the mounting of a LUKS encrypted volume.
+#   It handles such items as determining the next available loopback device,
+#   opening the encrypted container, and finally mounting the volume.
+#
+# License:
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Puplic License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+###############################################################################
+
+# Flags
+DEBUG=0;    # debugging
+VERBOSE=0;  # verbosity
+
+# Variables
+KEY_FILE="";            # Placeholder for the potential key file
+LOOPBACK_DEVICE="";     # Placeholder for the loopback device to use
+BLOCK_DEVICE_NAME="";   # Placeholder for the block device
+
+# debug - Helper function to print debugging output
+function debug {
+    if [ ${DEBUG} -ge 1 ]; then
+        echo "debug: $(basename $0): $*"
+    fi
+}
+
+# error - Helper function to print an error message
+function error {
+    echo "error: $*"
+}
+
+# fatal - Helper function to print an error message and exit
+function fatal {
+    echo "fatal: $*"
+    exit 1
+}
+
+# notice - Helper function to print general output
+function notice {
+    echo "notice: $*"
+}
+
+# verbose - Helper function to print verbose output
+function verbose {
+    if [ ${VERBOSE} -ge 1 ]; then
+        echo "$*"
+    fi
+}
+
+# clean_up - Helper function called by trap to clean up after an interrupt
+function clean_up {
+    echo ""
+    echo "Trap received, cleaning up"
+    if [ "${BLOCK_DEVICE_NAME}" != "" ]; then
+        echo "... Closing block device"
+        debug "executing: cryptsetup luksClose \"${BLOCK_DEVICE_NAME}\""
+        cryptsetup luksClose "${BLOCK_DEVICE_NAME}"
+    fi
+    if [ "${LOOPBACK_DEVICE}" != "" ]; then
+        echo "... Cleaning up loopback device"
+        debug "executing: losetup -d \"${LOOPBACK_DEVICE_NAME}\""
+        losetup -d "${LOOPBACK_DEVICE_NAME}"
+    fi
+    if [ -f "/dev/mapper/${BLOCK_DEVICE_NAME}" ]; then
+        echo "... Removing errant/incorrect device file"
+        debug "executing: rm \"/dev/mapper/${BLOCK_DEVICE_NAME}\""
+        rm "/dev/mapper/${BLOCK_DEVICE_NAME}"
+    fi
+    exit 1
+}
+
+# Simple usage function
+function usage {
+    echo "usage: $0 [OPTIONS] container mountpoint"
+    echo "    -d            - Display debugging output"
+    echo "    -h            - Print this message"
+    echo "    -k [KEYFILE]  - Key file for the encrypted container"
+    echo "    -v            - Display more verbose output"
+    exit 1
+}
+
+# Trap SIGHUP, SIGINT, and SIGTERM
+trap clean_up SIGHUP SIGINT SIGTERM
+
+# Parse the command-line options
+while getopts "dhk:v" opt; do
+    case $opt in
+        d)
+            DEBUG=1
+            ;;
+        h)
+            usage
+            ;;
+        k)
+            KEY_FILE=$OPTARG
+            ;;
+        v)
+            VERBOSE=1
+            ;;
+        --)
+            break
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            usage
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+shift $(( OPTIND - 1 ));
+
+# We must have two arguments (container and mountpoint)
+if [ $# -ne 2 ]; then
+    usage
+    exit 1
+fi
+
+# Variables for code readability
+# (these must come after command-line parsing)
+ENCRYPTED_CONTAINER="$1"
+MOUNTPOINT="$2"
+
+# Get the next available loopback device
+FOUND=0
+for LOOPBACK_DEVICE in `ls /dev/loop[0-9]`; do
+    debug "executing: losetup --show /"${LOOPBACK_DEVICE}/" > /dev/null 2>&1"
+    losetup --show "${LOOPBACK_DEVICE}" > /dev/null 2>&1
+    if [ $? -eq 1 ]; then
+        FOUND=1
+        break
+    fi
+done
+if [ ${FOUND} -eq 0 ]; then
+    fatal "no available loopback devices, exiting"
+fi
+
+# Make sure the encrypted container file exists
+if [ ! -f "${ENCRYPTED_CONTAINER}" ]; then
+    fatal "${ENCRYPTED_CONTAINER} does not exist or is not a file"
+fi
+
+# Make sure the mountpoint exists and is a directory
+if [ ! -d "${MOUNTPOINT}" ]; then
+    fatal "${MOUNTPOINT} does not exist or is not a directory"
+fi
+
+# Generate the block device name
+BLOCK_DEVICE_NAME=$(basename "${ENCRYPTED_CONTAINER}")
+
+# Display some debugging information
+debug "General Flags:"
+debug "DEBUG                 = '${DEBUG}'"
+debug "VERBOSE               = '${VERBOSE}'"
+debug ""
+debug "Variables:"
+debug "LOOPBACK_DEVICE       = '${LOOPBACK_DEVICE}'"
+debug "BLOCK_DEVICE_NAME     = '${BLOCK_DEVICE_NAME}'"
+debug "ENCRYPTED_CONTAINER   = '${ENCRYPTED_CONTAINER}'"
+debug "MOUNTPOINT            = '${MOUNTPOINT}'"
+
+# Create the loopback device
+verbose "Creating loopback device"
+debug "executing: losetup \"${LOOPBACK_DEVICE}\" \"${ENCRYPTED_CONTAINER}\""
+losetup "${LOOPBACK_DEVICE}" "${ENCRYPTED_CONTAINER}"
+debug "executing: losetup \"${LOOPBACK_DEVICE}\" > /dev/null 2>&1"
+losetup "${LOOPBACK_DEVICE}" > /dev/null 2>&1
+if [ $? -eq 1 ]; then
+    fatal "Unable to create loopback device"
+fi
+
+# Open the encrypted container
+verbose "Opening the encrypted container"
+if [ "${KEY_FILE}" == "" ]; then
+    debug "executing: cryptsetup luksOpen \"${LOOPBACK_DEVICE}\" \"${BLOCK_DEVICE_NAME}\""
+    cryptsetup luksOpen "${LOOPBACK_DEVICE}" "${BLOCK_DEVICE_NAME}"
+else
+    debug "executing: cryptsetup -d /"${KEY_FILE}/" luksOpen /"${LOOPBACK_DEVICE}/" /"${BLOCK_DEVICE_NAME}/""
+    cryptsetup -d "${KEY_FILE}" luksOpen "${LOOPBACK_DEVICE}" "${BLOCK_DEVICE_NAME}"
+fi
+
+# Mount the encrypted container
+verbose "Mounting the encrypted container"
+debug "executing: mount \"/dev/mapper/${BLOCK_DEVICE_NAME}\" \"${MOUNTPOINT}\""
+mount "/dev/mapper/${BLOCK_DEVICE_NAME}" "${MOUNTPOINT}"
+

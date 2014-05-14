@@ -1,0 +1,265 @@
+#!/bin/bash
+#
+# Filename:     lukscreate
+# Author:       Bennett Samowich <bsamowich@foolean.org>
+# Date:         2014-04-30
+#
+# Description:
+#   lukscreate is a script to handle the creation of a LUKS encrypted volume.
+#   It handles such items as determining the next available loopback device,
+#   initializing and formatting the encrypted container.
+#
+# License:
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Puplic License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+###############################################################################
+
+# Flags
+DEBUG=0;            # Display debugging output
+FORCE=0;            # Force overwrite of existing files
+VERBOSE=0;          # Display more verbose output
+USE_KEY_FILE=0;     # Whether to use a key file or not
+
+# Placeholder for a potential key file
+CONTAINER_KEY_FILE="";  # Placeholder for the potential key file
+CONTAINER_DATA_FILE=""; # Placeholder for the container data ile
+CONTAINER_SIZE="";      # Placeholder for the size of the container
+LOOPBACK_DEVICE="";     # Placeholder for the loopback device to use
+BLOCK_DEVICE_NAME="";   # Placeholder for the block device
+FSTYPE="ext4";          # Filesystem type
+
+# debug - Helper function to print debugging output
+function debug {
+    if [ ${DEBUG} -ge 1 ]; then
+        echo "debug: $(basename $0): $*"
+    fi
+}
+
+# error - Helper function to print an error message
+function error {
+    echo "error: $*"
+}
+
+# fatal - Helper function to print an error message and exit
+function fatal {
+    echo "fatal: $*"
+    exit 1
+}
+
+# notice - Helper function to print general output
+function notice {
+    echo "notice: $*"
+}
+
+# verbose - Helper function to print verbose output
+function verbose {
+    if [ ${VERBOSE} -ge 1 ]; then
+        echo "$*"
+    fi
+}
+
+# clean_up - Helper function called by trap to clean up after an interrupt
+function clean_up {
+    echo ""
+    echo "Trap received, cleaning up"
+    if [ "${BLOCK_DEVICE_NAME}" != "" ]; then
+        echo "... Closing block device"
+        cryptsetup luksClose "${BLOCK_DEVICE_NAME}"
+    fi
+    if [ "${LOOPBACK_DEVICE}" != "" ]; then
+        echo "... Cleaning up loopback device"
+        losetup -d "${LOOPBACK_DEVICE}"
+    fi
+    if [ -f "${CONTAINER_KEY_FILE}" ]; then
+        echo "... Removing container key file"
+        rm "${CONTAINER_KEY_FILE}"
+    fi
+    if [ -f "${CONTAINER_DATA_FILE}" ]; then
+        echo "... Removing container data file"
+        rm "${CONTAINER_DATA_FILE}"
+    fi
+    if [ -f "/dev/mapper/${BLOCK_DEVICE_NAME}" ]; then
+        echo "... Removing errant/incorrect device file"
+        rm "/dev/mapper/${BLOCK_DEVICE_NAME}"
+    fi
+    exit 1
+}
+
+# pwgen - overly complex but humerous password generator
+function pwgen {
+    # The character set to use in the generated password
+    CHARSET="A-Za-z0-9_+=,.?<>;:[]{}()*&~"
+
+    PWLEN=81920;    # Length of the password to generate
+    ROUNDS=128;     # Number of rounds to use when generating passwords
+
+    # Generate an initial password
+    PW=$(openssl rand $((PWLEN*4)) | tr -dc "${CHARSET}")
+
+    # Generate $ROUNDS number of passwords using the previous password as the key
+    # for the encryption to ensure the passwords are sufficiently randomized.
+    while [ ${ROUNDS} -ge 1 ]; do
+        PW=$(openssl rand $((PWLEN*4)) | openssl enc -aes256 -k "pass:${PW}" | tr -dc "${CHARSET}" | cut -c 9-$((PWLEN+1033)))
+        ROUNDS=$((ROUNDS - 1))
+    done
+
+    # Final password generation of the desired length.
+    PW=$(openssl rand $((PWLEN*4)) | openssl enc -aes256 -k "pass:${PW}" | tr -dc "${CHARSET}" | cut -c 14-$((PWLEN + 12)))
+    echo "${PW}"
+}
+
+# Simple usage function
+function usage {
+    echo "usage: $0 [OPTIONS]"
+    echo "    -c [FILE] - Full path to the container file"
+    echo "    -d        - Display debugging output"
+    echo "    -h        - Print this message"
+    echo "    -f        - Force recreation of existing files"
+    echo "    -k        - Generate a key file for this container"
+    echo "    -s [SIZE] - Size in MB of the container"
+    echo "    -v        - Display more verbose output"
+    exit 1
+}
+
+# Trap SIGHUP, SIGINT, and SIGTERM
+trap clean_up SIGHUP SIGINT SIGTERM
+
+# Parse the command-line options
+while getopts ":c:dfhks:v" opt; do
+    case $opt in
+        c)
+            CONTAINER_DATA_FILE=$OPTARG
+            ;;
+        d)
+            DEBUG=1
+            ;;
+        f)
+            FORCE=1
+            ;;
+        h)
+            usage
+            ;;
+        k)
+            USE_KEY_FILE=1
+            ;;
+        s)
+            CONTAINER_SIZE=$OPTARG
+            ;;
+        v)
+            VERBOSE=1
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# We must have a container name
+if [ "${CONTAINER_DATA_FILE}" == "" ]; then
+    error "Must supply the path to the container"
+    usage
+    exit 1;     # should never get here
+fi
+
+# We must have a container size
+if ! [ "${CONTAINER_SIZE}" -eq "${CONTAINER_SIZE}" ] 2>/dev/null; then
+    fatal "invalid container size '${CONTAINER_SIZE}'"
+fi
+
+# Create the encrypted container
+if [ -f "${CONTAINER_DATA_FILE}" ] && [ ${FORCE} -eq 0 ]; then
+    fatal "Container file ${CONTAINER_DATA_FILE} exists, exiting"
+fi
+
+# Initialize the container file with random data
+verbose "Initializing the container file"
+debug "executing: openssl rand -out \"${CONTAINER_DATA_FILE}\" $((${CONTAINER_SIZE} * 1048576))"
+openssl rand -out "${CONTAINER_DATA_FILE}" $((${CONTAINER_SIZE} * 1048576))
+
+# Generate the encrypted container's key file
+if [ ${USE_KEY_FILE} -eq 1 ]; then
+    CONTAINER_KEY_FILE="${CONTAINER_DATA_FILE}.pw"
+    if [ ! -f "${CONTAINER_KEY_FILE}" ] || [ ${FORCE} -eq 1 ]; then
+        verbose "Generating encrypted container key"
+        debug "executing: pwgen > \"${CONTAINER_KEY_FILE}\""
+        pwgen > "${CONTAINER_KEY_FILE}"
+    fi
+fi
+
+# Get the next available loopback device
+FOUND=0
+for LOOPBACK_DEVICE in `ls /dev/loop[0-9]`; do
+    losetup --show "${LOOPBACK_DEVICE}" > /dev/null 2>&1
+    if [ $? -eq 1 ]; then
+        FOUND=1
+        break
+    fi
+done
+if [ ${FOUND} -eq 0 ]; then
+    fatal "no available loopback devices, exiting"
+fi
+
+# Create the loopback device
+verbose "Creating loopback device"
+debug "executing: losetup \"${LOOPBACK_DEVICE}\" \"${CONTAINER_DATA_FILE}\""
+losetup "${LOOPBACK_DEVICE}" "${CONTAINER_DATA_FILE}"
+
+# Generate the block device's name for this container
+BLOCK_DEVICE_NAME=$(basename "${CONTAINER_DATA_FILE}")
+
+# Format the LUKS container
+verbose "Formatting the encrypted container"
+if [ "${CONTAINER_KEY_FILE}" == "" ]; then
+    # ... We'll prompt for a passphrase
+    debug "executing: cryptsetup luksFormat \"${LOOPBACK_DEVICE}\""
+    cryptsetup luksFormat "${LOOPBACK_DEVICE}"
+else
+    # ... We'll use our generated key file
+    debug "executing: echo \"YES\" | cryptsetup luksFormat \"${LOOPBACK_DEVICE}\" \"${CONTAINER_KEY_FILE}\""
+    echo "YES" | cryptsetup luksFormat "${LOOPBACK_DEVICE}" "${CONTAINER_KEY_FILE}"
+fi
+
+# Open the newly formatted container
+verbose "Opening the encrypted container"
+if [ "${CONTAINER_KEY_FILE}" == "" ]; then
+    # ... We'll prompt for a passphrase
+    debug "executing: cryptsetup luksOpen \"${LOOPBACK_DEVICE}\" \"${BLOCK_DEVICE_NAME}\""
+    cryptsetup luksOpen "${LOOPBACK_DEVICE}" "${BLOCK_DEVICE_NAME}"
+else
+    # ... We'll use our generated key file
+    debug "executing: cryptsetup -d \"${CONTAINER_KEY_FILE}\" luksOpen \"${LOOPBACK_DEVICE}\" \"${BLOCK_DEVICE_NAME}\""
+    cryptsetup -d "${CONTAINER_KEY_FILE}" luksOpen "${LOOPBACK_DEVICE}" "${BLOCK_DEVICE_NAME}"
+fi
+
+# Fill the encrypted block device with zeros
+# (this is supposed to protect against usage patterns being observable)
+verbose "Filling encrypted block device with zeros"
+debug "executing: dd if=/dev/zero of=\"/dev/mapper/${BLOCK_DEVICE_NAME}\" bs=1M" 
+dd if=/dev/zero of="/dev/mapper/${BLOCK_DEVICE_NAME}" bs=1M
+
+# Format the encrypted container
+verbose "Formatting the encrypted container as ext4"
+debug "executing: mkfs -t \"${FSTYPE}\" \"/dev/mapper/${BLOCK_DEVICE_NAME}\"" 
+mkfs -t "${FSTYPE}" "/dev/mapper/${BLOCK_DEVICE_NAME}" 
+
+# Clean up
+debug "executing: cryptsetup luksClose \"${BLOCK_DEVICE_NAME}\""
+cryptsetup luksClose "${BLOCK_DEVICE_NAME}"
+debug "executing: losetup -d \"${LOOPBACK_DEVICE}\""
+losetup -d "${LOOPBACK_DEVICE}"

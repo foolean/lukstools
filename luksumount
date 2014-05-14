@@ -1,0 +1,144 @@
+#!/bin/bash
+#
+# Filename:     luksumount
+# Author:       Bennett Samowich <bsamowich@foolean.org>
+# Date:         2014-04-29
+#
+# Description:
+#   luksumount is a script to handle the unmounting of a LUKS formated volume.
+#   It handles such items as unmounting the volume, closing the encrypted
+#   container, and releasing the loopback device.
+#
+# License:
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Puplic License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+###############################################################################
+
+# Flags
+DEBUG=0;    # debugging
+VERBOSE=0;  # verbosity
+
+# debug - Helper function to print debugging output
+function debug {
+    if [ ${DEBUG} -ge 1 ]; then
+        echo "debug: $(basename $0): $*"
+    fi
+}
+
+# error - Helper function to print an error message
+function error {
+    echo "error: $*"
+}
+
+# fatal - Helper function to print an error message and exit
+function fatal {
+    echo "fatal: $*"
+    exit 1
+}
+
+# notice - Helper function to print general output
+function notice {
+    echo "notice: $*"
+}
+
+# verbose - Helper function to print verbose output
+function verbose {
+    if [ ${VERBOSE} -ge 1 ]; then
+        echo "$*"
+    fi
+}
+
+# Simple usage function
+function usage {
+    echo "usage: $0 [OPTIONS] [MOUNTPOINT]"
+    echo "    -d            - Display debugging output"
+    echo "    -h            - Print this message"
+    echo "    -v            - Display more verbose output"
+    exit 1
+}
+
+while getopts ":dhv" opt; do
+    case $opt in
+        d)
+            DEBUG=1
+            shift
+            ;;
+        h)
+            usage
+            ;;
+        v)
+            VERBOSE=1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Iterate over each of the specified mountpoints
+for MOUNTPOINT in $@; do
+    FULL_MOUNTPOINT=$(readlink -f "${MOUNTPOINT}")
+
+    # Make sure the mountpoint is a directory
+    if [ ! -d "${FULL_MOUNTPOINT}" ]; then
+        error "${FULL_MOUNTPOINT} is not a directory or does not exist, skipping"
+        continue
+    fi
+
+    # Get the block device that is mounted on our mountpoint
+    BLOCK_DEVICE=$(mount | grep "on ${FULL_MOUNTPOINT} type" | awk '{print $1}')
+    if [ "${BLOCK_DEVICE}" == "" ]; then
+        error "${FULL_MOUNTPOINT} not mounted, skipping"
+        continue
+    fi
+   
+    # Get the information about this mount
+    CRYPT_STATUS=$(cryptsetup status "$(basename ${BLOCK_DEVICE})")
+    if [ "${CRYPT_STATUS}" == "" ]; then
+        error "${FULL_MOUNTPOINT} is not an encrypted mount, skipping"
+        continue
+    fi
+
+    # Get the loopback device the mount is associated with
+    LOOPBACK_DEVICE=$(echo -e "${CRYPT_STATUS}" | grep "device: " | awk '{print $2}')
+
+    # Display some debugging information
+    debug "General Flags:"
+    debug "DEBUG           = '${DEBUG}'"
+    debug "VERBOSE         = '${VERBOSE}'"
+    debug ""
+    debug "Variables:"
+    debug "FULL_MOUNTPOINT = '${FULL_MOUNTPOINT}'"
+    debug "BLOCK_DEVICE    = '${BLOCK_DEVICE}'"
+    debug "CRYPT_STATUS    = '${CRYPT_STATUS}'"
+    debug "LOPPBACK_DEVICE = '${LOOPBACK_DEVICE}'"
+
+    # Unmount the mountpoint
+    verbose "unmounting ${FULL_MOUNTPOINT}"
+    debug "executing: umount \"${FULL_MOUNTPOINT}\""
+    umount "${FULL_MOUNTPOINT}"
+    debug "executing: cryptsetup luksClose \"${BLOCK_DEVICE}\""
+    cryptsetup luksClose "${BLOCK_DEVICE}"
+    debug "executing: losetup -d \"${LOOPBACK_DEVICE}\""
+    losetup -d "${LOOPBACK_DEVICE}"
+done
