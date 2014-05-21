@@ -86,7 +86,7 @@ function clean_up {
     exit 1
 }
 
-# Simple usage function
+# usage - Simple usage function
 function usage {
     echo "usage: $0 [OPTIONS] container mountpoint"
     echo "    -d            - Display debugging output"

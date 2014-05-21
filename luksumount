@@ -59,7 +59,7 @@ function verbose {
     fi
 }
 
-# Simple usage function
+# usage - Simple usage function
 function usage {
     echo "usage: $0 [OPTIONS] [MOUNTPOINT]"
     echo "    -d            - Display debugging output"

@@ -119,7 +119,7 @@ function pwgen {
     echo "${PW}"
 }
 
-# Simple usage function
+# usage - Simple usage function
 function usage {
     echo "usage: $0 [OPTIONS]"
     echo "    -c [FILE] - Full path to the container file"
